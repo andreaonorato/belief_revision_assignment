@@ -1,0 +1,406 @@
+#####################
+
+import re
+import itertools
+
+#####################
+
+# Regular expressions for different patterns
+# Proposition
+pattern_proposition = r'^[a-z]$'
+# Negation
+pattern_negation = r'^¬*[a-z]$'
+# Implication (4 different patterns)
+pattern_imp_1_1 = r'^([a-z]) (->) ([a-z])$'
+pattern_imp_1_2 = r'^(¬[a-z]) (->) ([a-z])$'
+pattern_imp_1_3 = r'^([a-z]) (->) (¬[a-z])$'
+pattern_imp_1_4 = r'^(¬[a-z]) (->) (¬[a-z])$'
+# Or, And & If and only if
+pattern_or = r'^([a-z]) (v) ([a-z])$'
+pattern_and = r'^([a-z]) (\^) ([a-z])$'
+pattern_iff = r'^([a-z]) (<->) ([a-z])$'
+# Same as before but with recursion (for formulas like (p -> q) -> (q ^ r) )
+pattern_negation2 = r'^(¬)\((.*)\)'
+pattern_imp2 = r'^(?=(?:[^()]*\([^()]*\))*[^()]*$)\((.*)\) (->) (?=(?:[^()]*\([^()]*\))*[^()]*$)\((.*)\)$'
+pattern_or2 = r'^\((.*)\) (v) \((.*)\)$'
+pattern_and2 = r'^\((.*)\) (\^) \((.*)\)$'
+pattern_iff2 = r'^\((.*)\) (<->) \((.*)\)$'
+pattern_binary_operators = r'^([a-z]) (->|v|\^|<->) ([a-z])$'
+pattern_with_parenthesis = r'^\((.*)\) (->|v|\^|<->) \((.*)\)$'
+
+class BeliefSet():
+    def __init__(self):
+        # Initialize belief set as an empty list
+        self.beliefset = []
+
+    # Expand the belief set by inserting a proposition at a specified priority
+    def expansion(self, belset, proposition, priority):
+        if proposition not in belset:
+            if self.check(proposition):
+                belset.insert(priority, proposition)
+                self.beliefset, _ = self.check_add_formula(belset)
+                return self.beliefset
+            else:
+                raise ValueError('This formula is not written correctly')
+        else:
+            return self.beliefset
+                
+    # Contract the belief set by removing a proposition if it exists
+    def contraction(self, belset, proposition):
+        if proposition in belset:
+            belset.remove(proposition)
+        return belset
+    
+    # Revise the belief set with a new proposition at a specified priority
+    def revision(self, belset, proposition, priority):
+        if proposition[0] == '¬': # If it's ¬p, then ¬(¬p) = p
+            proposition2 = proposition[1:]
+        else:
+            proposition2 = '¬' + proposition
+        if self.check(proposition):
+            if proposition2 in belset:
+                belset = self.contraction(belset, proposition2)
+            self.beliefset = self.expansion(belset, proposition, priority)
+        return self.beliefset
+
+    # AGM Postulates
+    def contraction_success(self, belset, prop):
+        new_contraction = self.contraction(belset, prop)
+        return None if prop not in new_contraction else ValueError('Error in AGM Contraction - Success')
+
+    def contraction_inclusion(self, belset, prop):
+        new_contraction = self.contraction(belset,prop)
+        for bel in new_contraction: 
+            if bel not in belset:
+                return ValueError('Error in AGM Contraction - Inclusion')
+    
+    def contraction_vacuity(self, belset, prop):
+        new_contraction = self.contraction(belset, prop)
+        _, true_false = self.check_add_formula(belset)
+        if not self.check2([prop], true_false):
+            return None if belset == new_contraction else ValueError('Error in AGM Contraction - Vacuity')
+    
+    def contraction_extensionality(self, belset, prop1, prop2):
+        iff = prop1 + ' <-> ' + prop2
+        if re.match(pattern_iff2, iff) and iff in belset: 
+            return None if self.contraction(belset, prop1) == self.contraction(belset, prop2) else ValueError('Error in AGM Contraction - Extensionality')
+    
+    def revision_success(self, belset, prop):
+        new_revision = self.revision(belset, prop, 0)
+        return None if prop in new_revision else ValueError('Error in AGM Revision - Success')
+    
+    def revision_inclusion(self, belset1, prop):
+        return None if all(x in  self.expansion(belset1, prop,0) for x in self.revision(belset1, prop, 0)) else ValueError('Error in AGM Revision - Inclusion')
+
+    def revision_vacuity(self, belset, prop):
+        if '¬' + prop not in belset:
+            return None if self.revision(belset, prop, 0) == self.expansion(belset, prop,0) else ValueError('Error in AGM Revision - Vacuity')
+
+    def revision_consistency(self, belset, prop):
+        b_add, _ = self.check_add_formula(belset)
+        if not b_add == []:
+            bb_add, _ = self.check_add_formula(self.revision(belset, prop, 0))
+            return None if prop in bb_add else ValueError('Error in AGM Revision - Consistency')
+
+    def revision_extensionality(self, belset, prop1, prop2):
+        iff = prop1 + ' <-> ' + prop2
+        if re.match(pattern_iff2, iff) and iff in belset: 
+            return None if self.contraction(belset, prop1) == self.contraction(belset, prop2) else ValueError('Error in AGM Revision - Extensionality')
+
+
+    # This is an auxiliar formula that checks if, given a single beliefset and a dict (like bf = 'q' & dic1 = [p:False, q:True, R:True]),
+    # checks if bf can be satisfies with the values in dic1 (in that case, bf can be satisfies with q:True so it will return True)
+    def check2(self, bf, dic1):
+        _ , dict = self.check_add_formula(bf)
+        dict = dict[0]
+        for d in dict:
+            for d_d in dic1:
+                if dict[d] != d_d[d]:
+                    return False
+        return True
+            
+    
+    # Check if the given formula is valid
+    def check(self, formula):
+        if re.match(pattern_proposition, formula) or re.match(pattern_negation, formula):
+            return True
+        elif re.match(pattern_with_parenthesis, formula):  # If the formula is like p -> q
+            match = re.match(pattern_with_parenthesis, formula)
+            left_operand = match.group(1)
+            right_operand = match.group(3)
+            return self.check(left_operand) and self.check(right_operand)
+        elif re.match(pattern_binary_operators, formula):  # If the formula is like (p -> q) ^ (q v r) (more complex than before)
+            match = re.match(pattern_binary_operators, formula)
+            left_operand = match.group(1)
+            right_operand = match.group(3)
+            return self.check(left_operand) and self.check(right_operand)
+        else:
+            return False
+        
+    # Clear the belief set
+    def empty(self):
+        self.beliefset = []
+
+    # Print the current belief set
+    def printset(self):
+        print(self.beliefset)
+
+    # Get the truth value of a formula based on a truth assignment 
+    # This formula it's only used in check_add_formula
+    def get(self, elem, old_dic):
+        dic = old_dic.copy()
+        final_answer = True
+
+        if re.match(pattern_proposition, elem):
+            if dic[elem] == True:
+                return True
+            else: 
+                return False
+        elif re.match(pattern_negation, elem):
+            if dic[elem[1]] == False:
+                return True
+            else:
+                return False
+        # Check implications, disjunctions, conjunctions, and biconditionals
+        elif re.match(pattern_imp_1_1, elem):
+            match = re.match(pattern_imp_1_1, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left] == True and dic[right] == False :
+                return False
+            else:
+                return True
+        # Handle negated implications
+        elif re.match(pattern_imp_1_2, elem):
+            match = re.match(pattern_imp_1_2, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left[1]] == False and dic[right] == False :
+                return False
+            else:
+                return True
+        # Handle implications with negated consequents
+        elif re.match(pattern_imp_1_3, elem):
+            match = re.match(pattern_imp_1_3, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left] == True and dic[right[1]] == True :
+                return False
+            else:
+                return True
+        # Handle negated implications with negated consequents
+        elif re.match(pattern_imp_1_4, elem):
+            match = re.match(pattern_imp_1_4, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left[1]] == False and dic[right[1]] == True :
+                return False
+            else:
+                return True
+        # Handle disjunctions
+        elif re.match(pattern_or, elem):
+            match = re.match(pattern_or, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left] == False and dic[right] == False: 
+                return False
+            else:
+                return True
+        # Handle conjunctions
+        elif re.match(pattern_and, elem):
+            match = re.match(pattern_and, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left] == False or dic[right] == False:  
+                return False
+            else: 
+                return True
+        # Handle biconditionals
+        elif re.match(pattern_iff, elem):
+            match = re.match(pattern_iff, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            if dic[left] != dic[right]: 
+                return False
+            else:
+                return True
+        # Handle negated subformulas
+        elif re.match(pattern_negation2, elem):
+            match = re.match(pattern_negation2, elem)
+            _, form = match.group(1), match.group(2)
+            f1 = self.get(form, dic)
+            if f1 == True:
+                return False
+            else: 
+                return  True
+        # Handle implications within parentheses
+        elif re.match(pattern_imp2, elem):
+            match = re.match(pattern_imp2, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            f1 = self.get(left, dic)
+            f2 = self.get(right, dic)
+            if f1 == True and f2 == False:
+                return False
+            else:
+                return True
+        # Handle disjunctions within parentheses
+        elif re.match(pattern_or2, elem):
+            match = re.match(pattern_or2, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            f1 = self.get(left, dic)
+            f2 = self.get(right, dic)
+            if f1 == False and f2 == False:
+                return False
+            else:
+                return True
+        # Handle conjunctions within parentheses
+        elif re.match(pattern_and2, elem):
+            match = re.match(pattern_and2, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            f1 = self.get(left, dic)
+            f2 = self.get(right, dic)
+            if f1 == False or f2 == False:
+                return False
+            else:
+                return True
+        # Handle biconditionals within parentheses
+        elif re.match(pattern_iff2, elem):
+            match = re.match(pattern_iff2, elem)
+            left, _, right = match.group(1), match.group(2), match.group(3)
+            f1 = self.get(left, dic)
+            f2 = self.get(right, dic)
+            if f1 != f2:
+                return False
+            else:
+                return True
+
+        return final_answer
+
+    # Check and add a formula to the belief set
+    # This function takes as an input a beliefset (like ['p','¬q','p -> q', 'p -> r']) and returns 2 things:
+    # 1. First, it returns the consistent beliefset (in that case it will return ['p','¬q', 'p -> r'], since 'p -> q' is not consistent with p and ¬q)
+    # 2. It will return the value of each element (in that case it will return {p:True, q:False, r:True})
+
+    def check_add_formula(self, new_bf):
+        bf = new_bf.copy()
+        dic = {}
+
+        for elem in new_bf:
+            for char in elem:
+                if char.isalpha() and char not in dic and char != 'v':
+                    dic[char] = []
+
+        # Generate all possible combinations of truth values for each proposition
+        combinations = list(itertools.product([False, True], repeat=len(dic)))
+
+        # Create a list of dictionaries with each combination
+        list_of_dicts = [{k: v for k, v in zip(dic.keys(), combo)} for combo in combinations]
+
+        list_copy = list_of_dicts.copy()
+
+        for elem in new_bf:
+            corroboration = []
+
+            for d in list_copy:    
+                if d in list_of_dicts:    
+                    f = self.get(elem, d)
+                    corroboration.append(f)
+                    if f == False and len(list_of_dicts) > 1:
+                        list_of_dicts.remove(d)
+
+            if all(not x for x in corroboration):
+                bf.remove(elem)
+
+        return bf, list_of_dicts
+
+class Entailment():
+    def __init__(self):
+        self.beliefset = BeliefSet()
+        
+    # Solve entailment problem: does a given formula logically follow from the belief base?
+    def solve(self, beliefset, formula):
+        beliefset_copy = beliefset.beliefset[:]
+        beliefset_copy.append("¬(" + formula + ")")  # Add negation of the formula
+        return self.resolution(beliefset_copy) 
+    
+    # Resolution algorithm for entailment
+    def resolution(self, beliefset):
+        clauses = self.to_clauses(beliefset)
+        new = set()
+        while True:
+            new_clauses = self.resolve(clauses)
+            if not new_clauses:
+                return False  # Conflict found, formula does not follow from beliefset
+            if new_clauses.issubset(clauses):
+                return True   # No new clauses produced, formula follows from beliefset
+            new |= new_clauses
+            clauses |= new_clauses
+    
+    # Convert belief set to a set of clauses
+    def to_clauses(self, beliefset):
+        clauses = set()
+        for belief in beliefset:
+            if belief.startswith("¬"):
+                clauses.add(frozenset([belief]))
+            else:
+                clauses.add(frozenset([belief, "False"]))
+        return clauses
+    
+    # Apply resolution rule to generate new clauses
+    def resolve(self, clauses):
+        new = set()
+        for clause1 in clauses:
+            for clause2 in clauses:
+                if clause1 != clause2:
+                    resolvents = self.resolve_pair(clause1, clause2)
+                    if resolvents:
+                        new |= resolvents
+        return new
+
+    # Resolve a pair of clauses to produce resolvents
+    def resolve_pair(self, clause1, clause2):
+        resolvents = set()
+        for literal1 in clause1:
+            for literal2 in clause2:
+                if literal1.startswith("¬") != literal2.startswith("¬"):
+                    if literal1[1:] == literal2[1:]:
+                        resolvents.add(frozenset(clause1.union(clause2) - {literal1, literal2}))
+        return resolvents
+
+class Test():
+    def __init__(self):
+        pass
+
+    def successpostulate(self):
+        pass
+
+    def inclusion(self):
+        pass
+
+    def vacuity(self):
+        pass
+
+    def consistency(self):
+        pass
+
+    def extensionality(self):
+        pass
+
+
+
+bs = BeliefSet()
+bs.expansion(bs.beliefset, 'p',1)
+bs.expansion(bs.beliefset, '¬q', 3)
+bs.expansion(bs.beliefset, 'p -> r', 2)
+bs.expansion(bs.beliefset, 'r -> q', 1)
+bs.contraction(bs.beliefset, '¬q')
+bs.revision(bs.beliefset,'¬p',0)
+bs.revision(bs.beliefset,'r -> p',1)
+bs.expansion(bs.beliefset, '(r) -> (¬r)', 2)
+bs.expansion(bs.beliefset, 'r', 1)
+bs.printset()
+
+#AGM Postulates
+bs.contraction_success(bs.beliefset, 'r')
+bs.contraction_inclusion(bs.beliefset, 'r')
+bs.contraction_vacuity(bs.beliefset, 'r')
+bs.contraction_extensionality(bs.beliefset, 'r','q')
+
+bs.revision_success(bs.beliefset, 'r')
+bs.revision_inclusion(bs.beliefset, 'r')
+bs.revision_vacuity(bs.beliefset, 'r')
+bs.revision_consistency(bs.beliefset, 'r')
+bs.revision_extensionality(bs.beliefset, 'r','q')
